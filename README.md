@@ -10,7 +10,7 @@ Desde esta carpeta:
 mvn spring-boot:run
 ```
 
-La API queda en `http://localhost:8080`. El perfil local crea datos de ejemplo en H2 y un AdministradorMaster de desarrollo: `admin` / `AdminDemo2026!`. El front Vite en `http://localhost:5173` tiene CORS habilitado para `/api/**`. Salvo el inicio de sesión, los endpoints requieren un JWT en `Authorization: Bearer <token>`.
+La API queda en `http://localhost:8080`. El perfil local crea datos de ejemplo en H2 y un AdministradorMaster de desarrollo: `admin` / `AdminDemo2026!`. El front Vite local (`http://localhost:5173`) y el despliegue `https://restaurante-front-production.up.railway.app` tienen CORS habilitado para `/api/**`. Salvo el inicio de sesión, los endpoints requieren un JWT en `Authorization: Bearer <token>`.
 
 ## Docker con PostgreSQL
 
