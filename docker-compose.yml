@@ -1,0 +1,37 @@
+services:
+  db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: mesalista
+      POSTGRES_USER: mesalista
+      POSTGRES_PASSWORD: mesalista_dev
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mesalista -d mesalista"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      SPRING_PROFILES_ACTIVE: docker
+      SPRING_DATASOURCE_URL: jdbc:postgresql://db:5432/mesalista
+      SPRING_DATASOURCE_USERNAME: mesalista
+      SPRING_DATASOURCE_PASSWORD: mesalista_dev
+      JWT_SECRET: mesa-lista-local-dev-secret-change-before-production-2026
+      DEMO_ADMIN_USERNAME: admin
+      DEMO_ADMIN_PASSWORD: AdminDemo2026!
+    ports:
+      - "${API_BIND_ADDRESS:-127.0.0.1}:8082:8080"
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  postgres_data:
