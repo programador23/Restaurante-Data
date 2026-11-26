@@ -54,6 +54,12 @@ public class Pedido {
     @Column(name = "pagado_en")
     private Instant pagadoEn;
 
+    @Column(name = "revision_cocina")
+    private Long revisionCocina;
+
+    @Column(name = "revision_cocina_impresa")
+    private Long revisionCocinaImpresa;
+
     @OneToMany(mappedBy = "pedido", cascade = CascadeType.ALL, orphanRemoval = true)
     private List<PedidoItem> items = new ArrayList<>();
 
@@ -77,6 +83,14 @@ public class Pedido {
         });
     }
 
+    public void actualizarItems(List<PedidoItem> nuevosItems) {
+        items.removeIf(item -> !nuevosItems.contains(item));
+        nuevosItems.stream().filter(item -> !items.contains(item)).forEach(item -> {
+            item.setPedido(this);
+            items.add(item);
+        });
+    }
+
     public Long getIdPedido() { return idPedido; }
     public Restaurante getRestaurante() { return restaurante; }
     public int getNumeroMesa() { return numeroMesa; }
@@ -86,6 +100,10 @@ public class Pedido {
     public MetodoPago getMetodoPago() { return metodoPago; }
     public Instant getCreadoEn() { return creadoEn; }
     public Instant getPagadoEn() { return pagadoEn; }
+    public long getRevisionCocina() { return revisionCocina == null ? 0 : revisionCocina; }
+    public boolean isReimpresionCocinaPendiente() {
+        return getRevisionCocina() > (revisionCocinaImpresa == null ? 0 : revisionCocinaImpresa);
+    }
     public List<PedidoItem> getItems() { return items; }
 
     public void actualizar(int numeroMesa, Usuario garzon, String descripcion, EstadoPedido estado) {
@@ -99,5 +117,21 @@ public class Pedido {
         this.estado = EstadoPedido.PAGADO;
         this.metodoPago = metodoPago;
         this.pagadoEn = Instant.now();
+    }
+
+    public void aceptar() {
+        this.estado = EstadoPedido.EN_PREPARACION;
+    }
+
+    public void avanzar(EstadoPedido estado) {
+        this.estado = estado;
+    }
+
+    public void marcarModificacionCocina() {
+        this.revisionCocina = getRevisionCocina() + 1;
+    }
+
+    public void registrarReimpresionCocina() {
+        this.revisionCocinaImpresa = getRevisionCocina();
     }
 }

@@ -2,6 +2,8 @@ package cl.mesalista.restaurante.api;
 
 import cl.mesalista.restaurante.api.dto.ApiDtos.RestauranteRequest;
 import cl.mesalista.restaurante.api.dto.ApiDtos.RestauranteResponse;
+import cl.mesalista.restaurante.api.dto.ApiDtos.PlantillaTicketRequest;
+import cl.mesalista.restaurante.api.dto.ApiDtos.PlantillaTicketResponse;
 import cl.mesalista.restaurante.service.RestauranteService;
 import jakarta.validation.Valid;
 import java.util.List;
@@ -40,6 +42,17 @@ public class RestauranteController {
     @GetMapping("/{idRestaurante}")
     public RestauranteResponse obtener(@PathVariable Long idRestaurante) {
         return service.obtener(idRestaurante);
+    }
+
+    @GetMapping("/{idRestaurante}/plantilla-ticket")
+    public PlantillaTicketResponse obtenerPlantillaTicket(@PathVariable Long idRestaurante) {
+        return service.obtenerPlantillaTicket(idRestaurante);
+    }
+
+    @PutMapping("/{idRestaurante}/plantilla-ticket")
+    public PlantillaTicketResponse actualizarPlantillaTicket(@PathVariable Long idRestaurante,
+                                                              @Valid @RequestBody PlantillaTicketRequest request) {
+        return service.actualizarPlantillaTicket(idRestaurante, request);
     }
 
     @PutMapping("/{idRestaurante}")

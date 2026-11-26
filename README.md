@@ -94,11 +94,18 @@ El endpoint público `POST /api/auth/login` recibe `{"nombreUsuario":"admin","co
 | Autenticación | `POST /api/auth/login`, `GET /api/auth/me` |
 | Usuarios | `/api/usuarios` (solo AdministradorMaster) y `/api/restaurantes/{idRestaurante}/usuarios` (AdministradorMaster o Administrador) |
 | Restaurantes | `/api/restaurantes` (POST, GET con `?q=`, GET/PUT/DELETE `/{idRestaurante}`) |
+| Plantilla de comprobante | `GET /api/restaurantes/{idRestaurante}/plantilla-ticket` para todos los roles con acceso; `PUT` solo para Administrador Master, Administrador y Restaurante |
 | Menús | `/api/restaurantes/{idRestaurante}/menus` (un único menú por restaurante; POST duplicado responde 409, GET con `?q=`, GET/PUT/DELETE `/{idMenu}`) |
 | Productos | `/api/menus/{idMenu}/items` (POST, GET con `?q=`, GET/PUT/DELETE `/{idItemRestaurante}`) |
 | Pedidos | `/api/restaurantes/{idRestaurante}/pedidos` (POST, GET con `?estado=` y/o `?numeroMesa=`, GET/PUT/DELETE `/{idPedido}`) |
 
 Las operaciones de menú y pedidos se validan contra el restaurante de la ruta. Los productos de un pedido deben pertenecer a ese restaurante y estar disponibles. El total se calcula en el servidor y cada línea conserva el nombre y el precio vigentes al crear el pedido. Eliminar un restaurante elimina también sus menús, productos, pedidos y usuarios asociados.
+
+`POST /api/restaurantes/{idRestaurante}/pedidos/aceptar-mas-antiguo` acepta el pedido nuevo más antiguo; devuelve 204 si no hay pedidos nuevos. `POST /api/restaurantes/{idRestaurante}/pedidos/{idPedido}/aceptar` acepta un pedido nuevo concreto y devuelve 409 si ya cambió de estado. Estas operaciones requieren acceso al restaurante; el temporizador y la impresión se ejecutan en el navegador, no en el servidor.
+
+`PUT /api/restaurantes/{idRestaurante}/pedidos/{idPedido}/items` modifica productos de un pedido en preparación. Recibe `itemsOriginales` y `items`, ambas listas de `{idItemRestaurante, cantidad}`; devuelve 409 si el estado o los productos originales cambiaron. Los productos conservados mantienen su nombre y precio históricos; los nuevos deben estar disponibles. Si hubo cambios, la respuesta indica `reimpresionCocinaPendiente` y `revisionCocina`. `POST /api/restaurantes/{idRestaurante}/pedidos/{idPedido}/reimpresion-cocina` recibe `revision` para registrar el envío de esa versión a impresión, sin confirmar el resultado físico; una versión obsoleta devuelve 409. `POST /api/restaurantes/{idRestaurante}/pedidos/{idPedido}/avanzar` recibe `estadoActual` y avanza desde preparación o listo, sin reemplazar los productos. `DELETE /api/restaurantes/{idRestaurante}/pedidos/{idPedido}` solo elimina pedidos en preparación.
+
+La plantilla de comprobante se guarda por restaurante. `GET` devuelve `encabezado`, `contenido` y `pie` como `null` si aún no hay plantilla; `PUT` recibe esos tres campos de texto. El contenido debe incluir `{{mesa}}`, `{{productos}}` y `{{total}}`; también se admiten `{{restaurante}}` y `{{fecha}}`. La cuenta impresa es no fiscal y no registra el pago ni sustituye una boleta electrónica.
 
 ## Ejemplos
 
@@ -164,7 +171,9 @@ Crear pedido con varios productos:
 
 Los estados válidos son `NUEVO`, `EN_PREPARACION`, `LISTO_PARA_SERVIR`, `ENTREGADO` y `PAGADO`. `PAGADO` es el estado final; la interfaz solicita confirmación del total antes de finalizar los pedidos entregados de una mesa. Los IDs se generan en el servidor. Las respuestas de productos usan `idItemRestaurante`, `nombre`, `descripcion`, `valor`, `categoria`, `imagen` y `disponible`; el front de muestra usa `id`, `name`, `description`, `price`, `category`, `image` y `available`. Su adaptador HTTP debe traducir esos nombres y enviar el `idMenu`.
 
-Para cobrar una mesa en conjunto, usa `POST /api/restaurantes/{idRestaurante}/pedidos/mesas/{numeroMesa}/pago` con `{"idPedidos":[...],"totalConfirmado":18000}`. La API valida que la lista y el total correspondan exactamente a los pedidos entregados pendientes de pago de esa mesa, los marca como pagados en una sola transacción y responde con los pedidos y un total único. Si la lista o el total quedaron desactualizados, responde `409` sin modificar pedidos.
+Para cobrar una mesa en conjunto, usa `POST /api/restaurantes/{idRestaurante}/pedidos/mesas/{numeroMesa}/pago` con `{"idPedidos":[...],"totalConfirmado":18000,"metodoPago":"TARJETA"}`. La API valida que la lista y el total correspondan exactamente a los pedidos entregados pendientes de pago de esa mesa, los marca como pagados en una sola transacción y responde con los pedidos y un total único. Si la lista o el total quedaron desactualizados, responde `409` sin modificar pedidos.
+
+El pago requiere `metodoPago`: `EFECTIVO` o `TARJETA` (débito o crédito). Los valores anteriores `DEBITO` y `CREDITO` siguen siendo válidos para preservar la compatibilidad y los pagos históricos. Solo los pagos en efectivo se suman al efectivo de caja.
 
 ## Modelo
 

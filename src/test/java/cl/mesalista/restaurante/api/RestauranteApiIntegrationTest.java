@@ -1,7 +1,9 @@
 package cl.mesalista.restaurante.api;
 
 import static org.hamcrest.Matchers.is;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
@@ -11,6 +13,10 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.math.BigDecimal;
 import java.util.UUID;
+import java.util.Set;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 import cl.mesalista.restaurante.model.Restaurante;
 import cl.mesalista.restaurante.model.Rol;
 import cl.mesalista.restaurante.model.Usuario;
@@ -58,6 +64,234 @@ class RestauranteApiIntegrationTest {
         usuarios.save(new Usuario(null, "Admin", "Master", username,
                 passwordEncoder.encode("MasterTest123!"), Rol.ADMINISTRADOR_MASTER));
         masterToken = iniciarSesion(username, "MasterTest123!");
+    }
+
+    @Test
+    void reimpresionSoloSeHabilitaTrasModificarYNoBorraCambiosPosteriores() throws Exception {
+        long restaurante = crearRestaurante("Reimpresión cocina");
+        long menu = crearMenu(restaurante, "Carta");
+        long item = crearItem(menu, "Plato", "2500");
+        long pedido = crearPedido(restaurante, 1, item, 1);
+        mockMvc.perform(post("/api/restaurantes/{id}/pedidos/{pedido}/aceptar", restaurante, pedido)
+                        .with(masterAuth()))
+                .andExpect(jsonPath("$.reimpresionCocinaPendiente", is(false)));
+        mockMvc.perform(put("/api/restaurantes/{id}/pedidos/{pedido}/items", restaurante, pedido)
+                        .with(masterAuth()).contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"itemsOriginales":[{"idItemRestaurante":%d,"cantidad":1}],
+                                 "items":[{"idItemRestaurante":%d,"cantidad":1}]}
+                                """.formatted(item, item)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.reimpresionCocinaPendiente", is(false)));
+        mockMvc.perform(put("/api/restaurantes/{id}/pedidos/{pedido}/items", restaurante, pedido)
+                        .with(masterAuth()).contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"itemsOriginales":[{"idItemRestaurante":%d,"cantidad":1}],
+                                 "items":[{"idItemRestaurante":%d,"cantidad":2}]}
+                                """.formatted(item, item)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.revisionCocina", is(1)))
+                .andExpect(jsonPath("$.reimpresionCocinaPendiente", is(true)));
+        mockMvc.perform(get("/api/restaurantes/{id}/pedidos/{pedido}", restaurante, pedido).with(masterAuth()))
+                .andExpect(jsonPath("$.reimpresionCocinaPendiente", is(true)));
+        mockMvc.perform(put("/api/restaurantes/{id}/pedidos/{pedido}/items", restaurante, pedido)
+                        .with(masterAuth()).contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"itemsOriginales":[{"idItemRestaurante":%d,"cantidad":2}],
+                                 "items":[{"idItemRestaurante":%d,"cantidad":3}]}
+                                """.formatted(item, item)))
+                .andExpect(jsonPath("$.revisionCocina", is(2)));
+        mockMvc.perform(post("/api/restaurantes/{id}/pedidos/{pedido}/reimpresion-cocina", restaurante, pedido)
+                        .with(masterAuth()).contentType(MediaType.APPLICATION_JSON).content("{\"revision\":1}"))
+                .andExpect(status().isConflict());
+        mockMvc.perform(get("/api/restaurantes/{id}/pedidos/{pedido}", restaurante, pedido).with(masterAuth()))
+                .andExpect(jsonPath("$.reimpresionCocinaPendiente", is(true)));
+        mockMvc.perform(post("/api/restaurantes/{id}/pedidos/{pedido}/reimpresion-cocina", restaurante, pedido)
+                        .with(masterAuth()).contentType(MediaType.APPLICATION_JSON).content("{\"revision\":2}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.reimpresionCocinaPendiente", is(false)));
+        mockMvc.perform(get("/api/restaurantes/{id}/pedidos/{pedido}", restaurante, pedido).with(masterAuth()))
+                .andExpect(jsonPath("$.reimpresionCocinaPendiente", is(false)));
+    }
+
+    @Test
+    void editarProductosEnPreparacionConservaPreciosYDetectaCambios() throws Exception {
+        long restaurante = crearRestaurante("Editar pedido");
+        long menu = crearMenu(restaurante, "Carta");
+        long original = crearItem(menu, "Plato", "2500");
+        long agregado = crearItem(menu, "Jugo", "1200");
+        long pedido = crearPedido(restaurante, 1, original, 1);
+        String cambios = """
+                {"itemsOriginales":[{"idItemRestaurante":%d,"cantidad":1}],
+                 "items":[{"idItemRestaurante":%d,"cantidad":2},{"idItemRestaurante":%d,"cantidad":1}]}
+                """.formatted(original, original, agregado);
+
+        mockMvc.perform(put("/api/restaurantes/{id}/pedidos/{pedido}/items", restaurante, pedido)
+                        .with(masterAuth()).contentType(MediaType.APPLICATION_JSON).content(cambios))
+                .andExpect(status().isConflict());
+        mockMvc.perform(post("/api/restaurantes/{id}/pedidos/{pedido}/aceptar", restaurante, pedido)
+                        .with(masterAuth())).andExpect(status().isOk());
+        mockMvc.perform(put("/api/menus/{menu}/items/{item}", menu, original)
+                        .with(masterAuth()).contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"nombre":"Plato modificado","descripcion":"Descripción","valor":8000,"disponible":true}
+                                """))
+                .andExpect(status().isOk());
+        mockMvc.perform(put("/api/restaurantes/{id}/pedidos/{pedido}/items", restaurante, pedido)
+                        .with(masterAuth()).contentType(MediaType.APPLICATION_JSON).content(cambios))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.items[0].nombre", is("Plato")))
+                .andExpect(jsonPath("$.items[0].valorUnitario").value(2500))
+                .andExpect(jsonPath("$.total").value(6200));
+        mockMvc.perform(put("/api/restaurantes/{id}/pedidos/{pedido}/items", restaurante, pedido)
+                        .with(masterAuth()).contentType(MediaType.APPLICATION_JSON).content(cambios))
+                .andExpect(status().isConflict());
+        mockMvc.perform(put("/api/menus/{menu}/items/{item}", menu, original)
+                        .with(masterAuth()).contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"nombre":"Plato modificado","descripcion":"Descripción","valor":8000,"disponible":false}
+                                """))
+                .andExpect(status().isOk());
+        mockMvc.perform(put("/api/restaurantes/{id}/pedidos/{pedido}/items", restaurante, pedido)
+                        .with(masterAuth()).contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"itemsOriginales":[{"idItemRestaurante":%d,"cantidad":2},{"idItemRestaurante":%d,"cantidad":1}],
+                                 "items":[{"idItemRestaurante":%d,"cantidad":3},{"idItemRestaurante":%d,"cantidad":1}]}
+                                """.formatted(original, agregado, original, agregado)))
+                .andExpect(status().isBadRequest());
+        mockMvc.perform(put("/api/restaurantes/{id}/pedidos/{pedido}/items", restaurante, pedido)
+                        .with(masterAuth()).contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"itemsOriginales":[{"idItemRestaurante":%d,"cantidad":2},{"idItemRestaurante":%d,"cantidad":1}],
+                                 "items":[{"idItemRestaurante":%d,"cantidad":1},{"idItemRestaurante":%d,"cantidad":1}]}
+                                """.formatted(original, agregado, agregado, agregado)))
+                .andExpect(status().isBadRequest());
+        mockMvc.perform(put("/api/restaurantes/{id}/pedidos/{pedido}/items", restaurante, pedido)
+                        .with(masterAuth()).contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"itemsOriginales":[{"idItemRestaurante":%d,"cantidad":2},{"idItemRestaurante":%d,"cantidad":1}],
+                                 "items":[{"idItemRestaurante":%d,"cantidad":1}]}
+                                """.formatted(original, agregado, agregado)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.items.length()", is(1)))
+                .andExpect(jsonPath("$.total").value(1200));
+        mockMvc.perform(get("/api/menus/{menu}/items/{item}", menu, original).with(masterAuth()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.idItemRestaurante").value(original));
+        mockMvc.perform(post("/api/restaurantes/{id}/pedidos/{pedido}/avanzar", restaurante, pedido)
+                        .with(masterAuth()).contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"estadoActual\":\"EN_PREPARACION\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.estado", is("LISTO_PARA_SERVIR")))
+                .andExpect(jsonPath("$.total").value(1200));
+        mockMvc.perform(delete("/api/restaurantes/{id}/pedidos/{pedido}", restaurante, pedido)
+                        .with(masterAuth())).andExpect(status().isConflict());
+        mockMvc.perform(put("/api/restaurantes/{id}/pedidos/{pedido}/items", restaurante, pedido)
+                        .with(masterAuth()).contentType(MediaType.APPLICATION_JSON).content(cambios))
+                .andExpect(status().isConflict());
+        mockMvc.perform(post("/api/restaurantes/{id}/pedidos/{pedido}/avanzar", restaurante, pedido)
+                        .with(masterAuth()).contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"estadoActual\":\"EN_PREPARACION\"}"))
+                .andExpect(status().isConflict());
+    }
+
+    @Test
+    void eliminarSoloPedidosEnPreparacionYDelRestauranteAutorizado() throws Exception {
+        long restaurante = crearRestaurante("Eliminar pedido");
+        long otroRestaurante = crearRestaurante("Otro restaurante");
+        long menu = crearMenu(restaurante, "Carta");
+        long item = crearItem(menu, "Plato", "2500");
+        long pedido = crearPedido(restaurante, 1, item, 1);
+        String username = "eliminar-" + UUID.randomUUID();
+        usuarios.save(new Usuario(restaurantes.findById(otroRestaurante).orElseThrow(), "Ana", "Garzón",
+                username, passwordEncoder.encode("GarzonTest123!"), Rol.GARZON));
+        String token = iniciarSesion(username, "GarzonTest123!");
+        mockMvc.perform(delete("/api/restaurantes/{id}/pedidos/{pedido}", restaurante, pedido)
+                        .header("Authorization", "Bearer " + token))
+                .andExpect(status().isForbidden());
+        mockMvc.perform(delete("/api/restaurantes/{id}/pedidos/{pedido}", restaurante, pedido)
+                        .with(masterAuth())).andExpect(status().isConflict());
+        mockMvc.perform(post("/api/restaurantes/{id}/pedidos/{pedido}/aceptar", restaurante, pedido)
+                        .with(masterAuth())).andExpect(status().isOk());
+        mockMvc.perform(delete("/api/restaurantes/{id}/pedidos/{pedido}", restaurante, pedido)
+                        .with(masterAuth())).andExpect(status().isNoContent());
+        mockMvc.perform(get("/api/restaurantes/{id}/pedidos/{pedido}", restaurante, pedido)
+                        .with(masterAuth())).andExpect(status().isNotFound());
+    }
+
+    @Test
+    void aceptarMasAntiguoRespetaElRestauranteYElOrdenDeLlegada() throws Exception {
+        long restaurante = crearRestaurante("Aceptación automática");
+        long otroRestaurante = crearRestaurante("Otro restaurante automático");
+        long menu = crearMenu(restaurante, "Carta");
+        long item = crearItem(menu, "Plato", "2500");
+        long primerPedido = crearPedido(restaurante, 1, item, 1);
+        long segundoPedido = crearPedido(restaurante, 2, item, 1);
+        String username = "auto-" + UUID.randomUUID();
+        usuarios.save(new Usuario(restaurantes.findById(restaurante).orElseThrow(), "Ana", "Garzón",
+                username, passwordEncoder.encode("GarzonTest123!"), Rol.GARZON));
+        String token = iniciarSesion(username, "GarzonTest123!");
+
+        mockMvc.perform(post("/api/restaurantes/{id}/pedidos/aceptar-mas-antiguo", otroRestaurante)
+                        .header("Authorization", "Bearer " + token))
+                .andExpect(status().isForbidden());
+        mockMvc.perform(post("/api/restaurantes/{id}/pedidos/aceptar-mas-antiguo", restaurante)
+                        .header("Authorization", "Bearer " + token))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.idPedido").value(primerPedido))
+                .andExpect(jsonPath("$.estado", is("EN_PREPARACION")));
+        mockMvc.perform(post("/api/restaurantes/{id}/pedidos/{pedido}/aceptar", restaurante, primerPedido)
+                        .with(masterAuth()))
+                .andExpect(status().isConflict());
+        mockMvc.perform(post("/api/restaurantes/{id}/pedidos/aceptar-mas-antiguo", restaurante)
+                        .with(masterAuth()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.idPedido").value(segundoPedido));
+        mockMvc.perform(post("/api/restaurantes/{id}/pedidos/aceptar-mas-antiguo", restaurante)
+                        .with(masterAuth()))
+                .andExpect(status().isNoContent());
+    }
+
+    @Test
+    void aceptacionManualNoAceptaDosVecesElMismoPedido() throws Exception {
+        long restaurante = crearRestaurante("Aceptación manual");
+        long menu = crearMenu(restaurante, "Carta");
+        long item = crearItem(menu, "Plato", "2500");
+        long pedido = crearPedido(restaurante, 1, item, 1);
+        mockMvc.perform(post("/api/restaurantes/{id}/pedidos/{pedido}/aceptar", restaurante, pedido)
+                        .with(masterAuth()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.estado", is("EN_PREPARACION")));
+        mockMvc.perform(post("/api/restaurantes/{id}/pedidos/{pedido}/aceptar", restaurante, pedido)
+                        .with(masterAuth()))
+                .andExpect(status().isConflict());
+    }
+
+    @Test
+    void aceptacionesSimultaneasNoRepitenPedidos() throws Exception {
+        long restaurante = crearRestaurante("Aceptación simultánea");
+        long menu = crearMenu(restaurante, "Carta");
+        long item = crearItem(menu, "Plato", "2500");
+        long primero = crearPedido(restaurante, 1, item, 1);
+        long segundo = crearPedido(restaurante, 2, item, 1);
+        var executor = Executors.newFixedThreadPool(2);
+        var inicio = new CountDownLatch(1);
+        try {
+            var tarea = (java.util.concurrent.Callable<MvcResult>) () -> {
+                inicio.await();
+                return mockMvc.perform(post("/api/restaurantes/{id}/pedidos/aceptar-mas-antiguo", restaurante)
+                                .with(masterAuth()))
+                        .andExpect(status().isOk()).andReturn();
+            };
+            var primera = executor.submit(tarea);
+            var segunda = executor.submit(tarea);
+            inicio.countDown();
+            assertEquals(Set.of(primero, segundo),
+                    Set.of(id(primera.get(10, TimeUnit.SECONDS), "idPedido"),
+                            id(segunda.get(10, TimeUnit.SECONDS), "idPedido")));
+        } finally {
+            executor.shutdownNow();
+        }
     }
 
     @Test
@@ -163,6 +397,32 @@ class RestauranteApiIntegrationTest {
     }
 
     @Test
+    void pagoConTarjetaSeRegistraSinSumarloAlEfectivoDeCaja() throws Exception {
+        long restaurante = crearRestaurante("MesaLista tarjeta");
+        long menu = crearMenu(restaurante, "Carta");
+        long item = crearItem(menu, "Plato", "2500");
+        long pedido = crearPedido(restaurante, 5, item, 1);
+        marcarPedidoEntregado(restaurante, pedido, item, 5, 1);
+        mockMvc.perform(post("/api/restaurantes/{id}/caja/apertura", restaurante)
+                        .with(masterAuth()).contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"montoInicial\":1000}"))
+                .andExpect(status().isOk());
+
+        var pago = objectMapper.createObjectNode();
+        pago.putArray("idPedidos").add(pedido);
+        pago.put("totalConfirmado", 2500);
+        pago.put("metodoPago", "TARJETA");
+        mockMvc.perform(post("/api/restaurantes/{id}/pedidos/mesas/{mesa}/pago", restaurante, 5)
+                        .with(masterAuth()).contentType(MediaType.APPLICATION_JSON).content(pago.toString()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.pedidos[0].metodoPago", is("TARJETA")));
+        mockMvc.perform(get("/api/restaurantes/{id}/caja", restaurante).with(masterAuth()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.efectivoCobrado").value(0))
+                .andExpect(jsonPath("$.totalCaja").value(1000));
+    }
+
+    @Test
     void pedidoRechazaProductosDeOtroRestaurante() throws Exception {
         long primero = crearRestaurante("MesaLista A");
         long segundo = crearRestaurante("MesaLista B");
@@ -185,6 +445,70 @@ class RestauranteApiIntegrationTest {
     void recursosProtegidosRequierenAutenticacion() throws Exception {
         mockMvc.perform(get("/api/restaurantes"))
                 .andExpect(status().isUnauthorized());
+    }
+
+    @Test
+    void plantillaDeTicketSeGuardaPorRestauranteYRespetaElAcceso() throws Exception {
+        long restaurante = crearRestaurante("Plantilla A");
+        long otroRestaurante = crearRestaurante("Plantilla B");
+        String username = "ticket-" + UUID.randomUUID();
+        usuarios.save(new Usuario(restaurantes.findById(restaurante).orElseThrow(), "Ana", "Equipo",
+                username, passwordEncoder.encode("GarzonTest123!"), Rol.GARZON));
+        String token = iniciarSesion(username, "GarzonTest123!");
+        var plantilla = objectMapper.createObjectNode()
+                .put("encabezado", "Mi restaurante")
+                .put("contenido", "Mesa {{mesa}}\n{{productos}}\nTotal {{total}}")
+                .put("pie", "Gracias");
+
+        mockMvc.perform(get("/api/restaurantes/{id}/plantilla-ticket", restaurante))
+                .andExpect(status().isUnauthorized());
+        mockMvc.perform(put("/api/restaurantes/{id}/plantilla-ticket", restaurante)
+                        .header("Authorization", "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON).content(plantilla.toString()))
+                .andExpect(status().isForbidden());
+        mockMvc.perform(put("/api/restaurantes/{id}/plantilla-ticket", restaurante)
+                        .with(masterAuth()).contentType(MediaType.APPLICATION_JSON).content(plantilla.toString()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.encabezado", is("Mi restaurante")));
+        mockMvc.perform(get("/api/restaurantes/{id}/plantilla-ticket", restaurante)
+                        .header("Authorization", "Bearer " + token))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.contenido", is("Mesa {{mesa}}\n{{productos}}\nTotal {{total}}")));
+        for (Rol rol : new Rol[] { Rol.ADMINISTRADOR, Rol.RESTAURANTE }) {
+            String nombreUsuario = "plantilla-" + UUID.randomUUID();
+            usuarios.save(new Usuario(restaurantes.findById(restaurante).orElseThrow(), "Ana", "Equipo",
+                    nombreUsuario, passwordEncoder.encode("PlantillaTest123!"), rol));
+            String otroToken = iniciarSesion(nombreUsuario, "PlantillaTest123!");
+            mockMvc.perform(put("/api/restaurantes/{id}/plantilla-ticket", restaurante)
+                            .header("Authorization", "Bearer " + otroToken)
+                            .contentType(MediaType.APPLICATION_JSON).content(plantilla.toString()))
+                    .andExpect(status().isOk());
+            mockMvc.perform(put("/api/restaurantes/{id}/plantilla-ticket", otroRestaurante)
+                            .header("Authorization", "Bearer " + otroToken)
+                            .contentType(MediaType.APPLICATION_JSON).content(plantilla.toString()))
+                    .andExpect(status().isForbidden());
+        }
+        mockMvc.perform(get("/api/restaurantes/{id}/plantilla-ticket", otroRestaurante)
+                        .header("Authorization", "Bearer " + token))
+                .andExpect(status().isForbidden());
+        mockMvc.perform(put("/api/restaurantes/{id}/plantilla-ticket", otroRestaurante)
+                        .header("Authorization", "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON).content(plantilla.toString()))
+                .andExpect(status().isForbidden());
+        mockMvc.perform(get("/api/restaurantes/{id}/plantilla-ticket", otroRestaurante).with(masterAuth()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.contenido").doesNotExist());
+
+        plantilla.put("contenido", "Mesa {{mesa}} Total {{total}}");
+        mockMvc.perform(put("/api/restaurantes/{id}/plantilla-ticket", restaurante)
+                        .with(masterAuth()).contentType(MediaType.APPLICATION_JSON).content(plantilla.toString()))
+                .andExpect(status().isBadRequest());
+        plantilla.put("contenido", "{{mesa}} {{productos}} {{total}} {{desconocido}}");
+        mockMvc.perform(put("/api/restaurantes/{id}/plantilla-ticket", restaurante)
+                        .with(masterAuth()).contentType(MediaType.APPLICATION_JSON).content(plantilla.toString()))
+                .andExpect(status().isBadRequest());
+        mockMvc.perform(get("/api/restaurantes/{id}/plantilla-ticket", restaurante).with(masterAuth()))
+                .andExpect(jsonPath("$.contenido", is("Mesa {{mesa}}\n{{productos}}\nTotal {{total}}")));
     }
 
     @Test

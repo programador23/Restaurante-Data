@@ -113,6 +113,12 @@ public class SecurityConfig {
                         .requestMatchers("/api/restaurantes/*/caja", "/api/restaurantes/*/caja/**")
                         .hasAnyRole(Rol.ADMINISTRADOR_MASTER.name(), Rol.ADMINISTRADOR.name(),
                                 Rol.RESTAURANTE.name())
+                        .requestMatchers(HttpMethod.GET, "/api/restaurantes/*/plantilla-ticket")
+                        .hasAnyRole(Rol.ADMINISTRADOR_MASTER.name(), Rol.ADMINISTRADOR.name(),
+                                Rol.RESTAURANTE.name(), Rol.GARZON.name())
+                        .requestMatchers("/api/restaurantes/*/plantilla-ticket")
+                        .hasAnyRole(Rol.ADMINISTRADOR_MASTER.name(), Rol.ADMINISTRADOR.name(),
+                                Rol.RESTAURANTE.name())
                         .requestMatchers(HttpMethod.GET, "/api/restaurantes", "/api/restaurantes/*")
                         .hasAnyRole(Rol.ADMINISTRADOR_MASTER.name(), Rol.ADMINISTRADOR.name(),
                                 Rol.RESTAURANTE.name(), Rol.GARZON.name())

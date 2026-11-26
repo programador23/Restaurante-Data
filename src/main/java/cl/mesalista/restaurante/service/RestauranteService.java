@@ -2,6 +2,8 @@ package cl.mesalista.restaurante.service;
 
 import cl.mesalista.restaurante.api.dto.ApiDtos.RestauranteRequest;
 import cl.mesalista.restaurante.api.dto.ApiDtos.RestauranteResponse;
+import cl.mesalista.restaurante.api.dto.ApiDtos.PlantillaTicketRequest;
+import cl.mesalista.restaurante.api.dto.ApiDtos.PlantillaTicketResponse;
 import cl.mesalista.restaurante.model.Menu;
 import cl.mesalista.restaurante.model.Restaurante;
 import cl.mesalista.restaurante.repository.ItemRestauranteRepository;
@@ -10,6 +12,8 @@ import cl.mesalista.restaurante.repository.PedidoRepository;
 import cl.mesalista.restaurante.repository.RestauranteRepository;
 import cl.mesalista.restaurante.repository.UsuarioRepository;
 import java.util.List;
+import java.util.Set;
+import java.util.regex.Pattern;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -17,6 +21,8 @@ import org.springframework.web.server.ResponseStatusException;
 
 @Service
 public class RestauranteService {
+    private static final Pattern MARCADOR_TICKET = Pattern.compile("\\{\\{([^{}]+)}}");
+    private static final Set<String> MARCADORES_TICKET = Set.of("restaurante", "fecha", "mesa", "productos", "total");
     private final RestauranteRepository restaurantes;
     private final MenuRepository menus;
     private final ItemRestauranteRepository items;
@@ -66,6 +72,35 @@ public class RestauranteService {
         return response(encontrar(id));
     }
 
+    @Transactional(readOnly = true)
+    public PlantillaTicketResponse obtenerPlantillaTicket(Long id) {
+        access.requireRestaurantAccess(id);
+        return plantillaTicket(encontrar(id));
+    }
+
+    @Transactional
+    public PlantillaTicketResponse actualizarPlantillaTicket(Long id, PlantillaTicketRequest request) {
+        access.requireRestaurantAccess(id);
+        Restaurante restaurante = encontrar(id);
+        for (String marcador : List.of("{{mesa}}", "{{productos}}", "{{total}}")) {
+            if (!request.contenido().contains(marcador)) {
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                        "La plantilla debe incluir " + marcador + " en el contenido.");
+            }
+            for (String texto : List.of(request.encabezado(), request.contenido(), request.pie())) {
+                var marcadores = MARCADOR_TICKET.matcher(texto);
+                while (marcadores.find()) {
+                    if (!MARCADORES_TICKET.contains(marcadores.group(1))) {
+                        throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                                "Marcador de plantilla no reconocido: " + marcadores.group());
+                    }
+                }
+            }
+        }
+        restaurante.setPlantillaTicket(request.encabezado(), request.contenido(), request.pie());
+        return plantillaTicket(restaurantes.save(restaurante));
+    }
+
     @Transactional
     public RestauranteResponse actualizar(Long id, RestauranteRequest request) {
         access.requireMaster();
@@ -96,6 +131,11 @@ public class RestauranteService {
     private static RestauranteResponse response(Restaurante restaurante) {
         return new RestauranteResponse(restaurante.getIdRestaurante(), restaurante.getNombre(),
                 restaurante.getCategoria());
+    }
+
+    private static PlantillaTicketResponse plantillaTicket(Restaurante restaurante) {
+        return new PlantillaTicketResponse(restaurante.getTicketEncabezado(),
+                restaurante.getTicketContenido(), restaurante.getTicketPie());
     }
 
     private static boolean coincide(Restaurante restaurante, String q) {

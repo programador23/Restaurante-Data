@@ -27,6 +27,15 @@ public final class ApiDtos {
     public record RestauranteResponse(Long idRestaurante, String nombre, String categoria) {
     }
 
+    public record PlantillaTicketRequest(
+            @NotNull @Size(max = 200) String encabezado,
+            @NotBlank @Size(max = 6000) String contenido,
+            @NotNull @Size(max = 1000) String pie) {
+    }
+
+    public record PlantillaTicketResponse(String encabezado, String contenido, String pie) {
+    }
+
     public record MenuRequest(@NotBlank String nombre) {
     }
 
@@ -67,6 +76,17 @@ public final class ApiDtos {
             @NotEmpty List<@Valid PedidoItemRequest> items) {
     }
 
+    public record EditarPedidoItemsRequest(
+            @NotEmpty List<@NotNull @Valid PedidoItemRequest> itemsOriginales,
+            @NotEmpty List<@NotNull @Valid PedidoItemRequest> items) {
+    }
+
+    public record AvanzarPedidoRequest(@NotNull EstadoPedido estadoActual) {
+    }
+
+    public record ReimpresionCocinaRequest(@NotNull @Positive Long revision) {
+    }
+
     public record PedidoItemResponse(
             Long idItemRestaurante,
             String nombre,
@@ -86,7 +106,9 @@ public final class ApiDtos {
             MetodoPago metodoPago,
             Instant creadoEn,
             List<PedidoItemResponse> items,
-            BigDecimal total) {
+            BigDecimal total,
+            long revisionCocina,
+            boolean reimpresionCocinaPendiente) {
     }
 
     public record PagoMesaRequest(
