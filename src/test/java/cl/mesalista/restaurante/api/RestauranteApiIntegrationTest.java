@@ -423,6 +423,84 @@ class RestauranteApiIntegrationTest {
     }
 
     @Test
+    void pagoEnEfectivoSumaALaCajaYCierreConservaElTotal() throws Exception {
+        long restaurante = crearRestaurante("MesaLista efectivo");
+        long menu = crearMenu(restaurante, "Carta");
+        long item = crearItem(menu, "Plato", "2500");
+        long pedido = crearPedido(restaurante, 5, item, 2);
+        marcarPedidoEntregado(restaurante, pedido, item, 5, 2);
+        mockMvc.perform(post("/api/restaurantes/{id}/caja/apertura", restaurante)
+                        .with(masterAuth()).contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"montoInicial\":1000}"))
+                .andExpect(status().isOk());
+
+        var pago = objectMapper.createObjectNode();
+        pago.putArray("idPedidos").add(pedido);
+        pago.put("totalConfirmado", 5000);
+        pago.put("metodoPago", "EFECTIVO");
+        mockMvc.perform(post("/api/restaurantes/{id}/pedidos/mesas/{mesa}/pago", restaurante, 5)
+                        .with(masterAuth()).contentType(MediaType.APPLICATION_JSON).content(pago.toString()))
+                .andExpect(status().isOk());
+        mockMvc.perform(get("/api/restaurantes/{id}/caja", restaurante).with(masterAuth()))
+                .andExpect(jsonPath("$.efectivoCobrado").value(5000))
+                .andExpect(jsonPath("$.totalCaja").value(6000));
+        mockMvc.perform(post("/api/restaurantes/{id}/caja/cierre", restaurante).with(masterAuth()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.efectivoCobrado").value(5000));
+    }
+
+    @Test
+    void aperturasSimultaneasDeCajaSoloCreanUna() throws Exception {
+        long restaurante = crearRestaurante("MesaLista caja simultánea");
+        var executor = Executors.newFixedThreadPool(2);
+        var inicio = new CountDownLatch(1);
+        try {
+            var tarea = (java.util.concurrent.Callable<Integer>) () -> {
+                inicio.await();
+                return mockMvc.perform(post("/api/restaurantes/{id}/caja/apertura", restaurante)
+                                .with(masterAuth()).contentType(MediaType.APPLICATION_JSON)
+                                .content("{\"montoInicial\":1000}"))
+                        .andReturn().getResponse().getStatus();
+            };
+            var primera = executor.submit(tarea);
+            var segunda = executor.submit(tarea);
+            inicio.countDown();
+            assertEquals(Set.of(200, 409),
+                    Set.of(primera.get(10, TimeUnit.SECONDS), segunda.get(10, TimeUnit.SECONDS)));
+        } finally {
+            executor.shutdownNow();
+        }
+    }
+
+    @Test
+    void listadoDePedidosFiltraPorEstadoYMesaConOrdenEstable() throws Exception {
+        long restaurante = crearRestaurante("MesaLista filtros");
+        long menu = crearMenu(restaurante, "Carta");
+        long item = crearItem(menu, "Plato", "2500");
+        long mesa1 = crearPedido(restaurante, 1, item, 1);
+        long mesa2 = crearPedido(restaurante, 2, item, 1);
+        long otraMesa1 = crearPedido(restaurante, 1, item, 1);
+        marcarPedidoEntregado(restaurante, mesa2, item, 2, 1);
+
+        mockMvc.perform(get("/api/restaurantes/{id}/pedidos", restaurante).with(masterAuth()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.length()", is(3)))
+                .andExpect(jsonPath("$[0].idPedido").value(mesa1))
+                .andExpect(jsonPath("$[2].idPedido").value(otraMesa1))
+                .andExpect(jsonPath("$[0].items[0].nombre", is("Plato")));
+        mockMvc.perform(get("/api/restaurantes/{id}/pedidos", restaurante)
+                        .param("numeroMesa", "1").with(masterAuth()))
+                .andExpect(jsonPath("$.length()", is(2)));
+        mockMvc.perform(get("/api/restaurantes/{id}/pedidos", restaurante)
+                        .param("estado", "ENTREGADO").with(masterAuth()))
+                .andExpect(jsonPath("$.length()", is(1)))
+                .andExpect(jsonPath("$[0].idPedido").value(mesa2));
+        mockMvc.perform(get("/api/restaurantes/{id}/pedidos", restaurante)
+                        .param("estado", "ENTREGADO").param("numeroMesa", "1").with(masterAuth()))
+                .andExpect(jsonPath("$.length()", is(0)));
+    }
+
+    @Test
     void pedidoRechazaProductosDeOtroRestaurante() throws Exception {
         long primero = crearRestaurante("MesaLista A");
         long segundo = crearRestaurante("MesaLista B");

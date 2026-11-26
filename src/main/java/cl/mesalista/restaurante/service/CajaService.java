@@ -6,7 +6,6 @@ import cl.mesalista.restaurante.model.Caja;
 import cl.mesalista.restaurante.model.EstadoCaja;
 import cl.mesalista.restaurante.model.EstadoPedido;
 import cl.mesalista.restaurante.model.MetodoPago;
-import cl.mesalista.restaurante.model.Pedido;
 import cl.mesalista.restaurante.model.Restaurante;
 import cl.mesalista.restaurante.repository.CajaRepository;
 import cl.mesalista.restaurante.repository.PedidoRepository;
@@ -44,17 +43,20 @@ public class CajaService {
     @Transactional
     public CajaResponse abrir(Long idRestaurante, CajaAperturaRequest request) {
         access.requireRestaurantAccess(idRestaurante);
+        // El lock sobre el restaurante serializa aperturas simultáneas.
+        Restaurante restaurante = restaurantes.findByIdRestaurante(idRestaurante)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Restaurante no encontrado."));
         if (cajas.findByRestaurante_IdRestauranteAndEstado(idRestaurante, EstadoCaja.ABIERTA).isPresent()) {
             throw new ResponseStatusException(HttpStatus.CONFLICT, "Ya existe una caja abierta.");
         }
-        Restaurante restaurante = restaurantes.findById(idRestaurante)
-                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Restaurante no encontrado."));
         return response(cajas.save(new Caja(restaurante, request.montoInicial())));
     }
 
     @Transactional
     public CajaResponse cerrar(Long idRestaurante) {
         access.requireRestaurantAccess(idRestaurante);
+        restaurantes.findByIdRestaurante(idRestaurante)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Restaurante no encontrado."));
         Caja caja = cajas.findByRestaurante_IdRestauranteAndEstado(idRestaurante, EstadoCaja.ABIERTA)
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.CONFLICT, "No hay una caja abierta."));
         caja.cerrar(efectivoCobrado(caja, Instant.now()));
@@ -76,21 +78,8 @@ public class CajaService {
     }
 
     private BigDecimal efectivoCobrado(Caja caja, Instant fin) {
-        BigDecimal total = BigDecimal.ZERO;
-        for (Pedido pedido : pedidos.findByRestaurante_IdRestaurante(
-                caja.getRestaurante().getIdRestaurante())) {
-            if (pedido.getEstado() != EstadoPedido.PAGADO
-                    || pedido.getMetodoPago() != MetodoPago.EFECTIVO
-                    || pedido.getPagadoEn() == null
-                    || pedido.getPagadoEn().isBefore(caja.getAbiertaEn())
-                    || pedido.getPagadoEn().isAfter(fin)) {
-                continue;
-            }
-            BigDecimal pedidoTotal = pedido.getItems().stream()
-                    .map(item -> item.getValorUnitario().multiply(BigDecimal.valueOf(item.getCantidad())))
-                    .reduce(BigDecimal.ZERO, BigDecimal::add);
-            total = total.add(pedidoTotal);
-        }
-        return total;
+        BigDecimal total = pedidos.sumarCobrado(caja.getRestaurante().getIdRestaurante(),
+                EstadoPedido.PAGADO, MetodoPago.EFECTIVO, caja.getAbiertaEn(), fin);
+        return total == null ? BigDecimal.ZERO : total;
     }
 }

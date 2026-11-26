@@ -4,9 +4,17 @@ import cl.mesalista.restaurante.model.Rol;
 import cl.mesalista.restaurante.repository.UsuarioRepository;
 import com.nimbusds.jose.jwk.source.ImmutableSecret;
 import com.nimbusds.jose.proc.SecurityContext;
+import jakarta.servlet.http.HttpServletRequest;
+import jakarta.servlet.http.HttpServletResponse;
+import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.time.Instant;
 import javax.crypto.SecretKey;
 import javax.crypto.spec.SecretKeySpec;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.security.access.AccessDeniedException;
+import org.springframework.security.core.AuthenticationException;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -33,6 +41,9 @@ import org.springframework.security.web.SecurityFilterChain;
 
 @Configuration
 public class SecurityConfig {
+    private static final Logger log = LoggerFactory.getLogger(SecurityConfig.class);
+    private static final String DEFAULT_JWT_SECRET = "mesa-lista-local-dev-secret-change-before-production-2026";
+
     @Bean
     PasswordEncoder passwordEncoder() {
         return new BCryptPasswordEncoder();
@@ -40,6 +51,9 @@ public class SecurityConfig {
 
     @Bean
     JwtEncoder jwtEncoder(@Value("${app.jwt.secret}") String secret) {
+        if (DEFAULT_JWT_SECRET.equals(secret)) {
+            log.warn("JWT_SECRET usa el valor por defecto público. Define un JWT_SECRET propio en producción.");
+        }
         SecretKey key = signingKey(secret);
         return new NimbusJwtEncoder(new ImmutableSecret<SecurityContext>(key));
     }
@@ -125,8 +139,33 @@ public class SecurityConfig {
                         .requestMatchers("/api/restaurantes/**").hasRole(Rol.ADMINISTRADOR_MASTER.name())
                         .anyRequest().authenticated())
                 .oauth2ResourceServer(resource -> resource
-                        .jwt(jwt -> jwt.jwtAuthenticationConverter(authentication)));
+                        .authenticationEntryPoint(SecurityConfig::sinSesion)
+                        .accessDeniedHandler(SecurityConfig::sinPermiso)
+                        .jwt(jwt -> jwt.jwtAuthenticationConverter(authentication)))
+                .exceptionHandling(errors -> errors
+                        .authenticationEntryPoint(SecurityConfig::sinSesion)
+                        .accessDeniedHandler(SecurityConfig::sinPermiso));
         return http.build();
+    }
+
+    private static void sinSesion(HttpServletRequest request, HttpServletResponse response,
+                                  AuthenticationException exception) throws IOException {
+        escribirError(response, HttpServletResponse.SC_UNAUTHORIZED,
+                "Tu sesión no es válida o expiró. Inicia sesión nuevamente.");
+    }
+
+    private static void sinPermiso(HttpServletRequest request, HttpServletResponse response,
+                                   AccessDeniedException exception) throws IOException {
+        escribirError(response, HttpServletResponse.SC_FORBIDDEN,
+                "No tienes permiso para realizar esta acción.");
+    }
+
+    private static void escribirError(HttpServletResponse response, int status, String mensaje)
+            throws IOException {
+        response.setStatus(status);
+        response.setContentType("application/json;charset=UTF-8");
+        response.getWriter().write("{\"timestamp\":\"" + Instant.now() + "\",\"status\":" + status
+                + ",\"error\":\"" + mensaje + "\"}");
     }
 
     private static SecretKey signingKey(String secret) {

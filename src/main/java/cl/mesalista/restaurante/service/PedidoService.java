@@ -18,12 +18,16 @@ import cl.mesalista.restaurante.repository.ItemRestauranteRepository;
 import cl.mesalista.restaurante.repository.PedidoRepository;
 import cl.mesalista.restaurante.repository.RestauranteRepository;
 import cl.mesalista.restaurante.repository.UsuarioRepository;
+import jakarta.persistence.criteria.Predicate;
 import java.math.BigDecimal;
+import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.Map;
 import java.util.List;
 import java.util.Set;
 import java.util.stream.Collectors;
+import org.springframework.data.domain.Sort;
+import org.springframework.data.jpa.domain.Specification;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -61,9 +65,18 @@ public class PedidoService {
     public List<PedidoResponse> buscar(Long idRestaurante, EstadoPedido estado, Integer numeroMesa) {
         access.requireRestaurantAccess(idRestaurante);
         restaurante(idRestaurante);
-        return pedidos.findByRestaurante_IdRestaurante(idRestaurante).stream()
-                .filter(pedido -> estado == null || pedido.getEstado() == estado)
-                .filter(pedido -> numeroMesa == null || pedido.getNumeroMesa() == numeroMesa)
+        Specification<Pedido> filtro = (root, query, cb) -> {
+            List<Predicate> condiciones = new ArrayList<>();
+            condiciones.add(cb.equal(root.get("restaurante").get("idRestaurante"), idRestaurante));
+            if (estado != null) {
+                condiciones.add(cb.equal(root.get("estado"), estado));
+            }
+            if (numeroMesa != null) {
+                condiciones.add(cb.equal(root.get("numeroMesa"), numeroMesa));
+            }
+            return cb.and(condiciones.toArray(new Predicate[0]));
+        };
+        return pedidos.findAll(filtro, Sort.by("idPedido")).stream()
                 .map(PedidoService::response).toList();
     }
 
@@ -228,13 +241,19 @@ public class PedidoService {
 
     private List<PedidoItem> crearItems(Long idRestaurante, List<PedidoItemRequest> requestItems) {
         Set<Long> usados = new HashSet<>();
-        return requestItems.stream().map(linea -> {
+        for (PedidoItemRequest linea : requestItems) {
             if (!usados.add(linea.idItemRestaurante())) {
                 throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
                         "Un producto no puede repetirse; aumenta su cantidad.");
             }
-            ItemRestaurante item = items.findById(linea.idItemRestaurante()).orElseThrow(() ->
-                    new ResponseStatusException(HttpStatus.NOT_FOUND, "Producto no encontrado"));
+        }
+        Map<Long, ItemRestaurante> encontrados = items.findAllConMenu(usados).stream()
+                .collect(Collectors.toMap(ItemRestaurante::getIdItemRestaurante, item -> item));
+        return requestItems.stream().map(linea -> {
+            ItemRestaurante item = encontrados.get(linea.idItemRestaurante());
+            if (item == null) {
+                throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Producto no encontrado");
+            }
             if (!item.getMenu().getRestaurante().getIdRestaurante().equals(idRestaurante)) {
                 throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
                         "Todos los productos del pedido deben pertenecer al restaurante.");
